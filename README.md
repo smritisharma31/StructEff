@@ -2,7 +2,7 @@
 
 **A Hybrid Contrastive Learning Framework for Fungal Effector Prediction**
 
-StructEff predicts fungal effector proteins from amino acid sequences using a hybrid deep learning pipeline combining ESM2 protein language model embeddings with manually engineered structural and physicochemical features, trained via dynamic hard negative contrastive learning.
+StructEff predicts fungal effector proteins from protein sequences using a hybrid deep learning pipeline. Input sequences are first folded into 3D PDB structures using ESMFold, from which **35 structural and physicochemical features are manually computed** from the PDB structures (phi/psi torsion angles, RSA, contact maps, graph topology, betweenness centrality, pLDDT, cysteine content, secondary structure fractions, etc.). Sequences are additionally used for **MMseqs2-based conservation features** (entropy, pct_conserved) and **ESM2-650M sequence embeddings** (1280-dim). All features are combined and trained via a **dynamic hard negative contrastive Siamese network** followed by XGBoost classification.
 
 ---
 
