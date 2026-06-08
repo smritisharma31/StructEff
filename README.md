@@ -8,17 +8,22 @@ StructEff predicts fungal effector proteins from amino acid sequences using a hy
 
 ## Performance
 
-| Metric | StructEff | PPEPFINDER |
-|--------|-----------|------------|
-| True Positives (TP) | **43** | 36 |
-| True Negatives (TN) | 143 | 152 |
-| Recall | **0.811** | 0.679 |
-| Precision | 0.717 | — |
-| F1-score | **0.761** | — |
-| ROC-AUC | **0.8979** | — |
-| MCC | **0.678** | — |
+Benchmarked on an independent dataset of **213 proteins (53 effectors, 160 non-effectors)**.
 
-Evaluated on an independent dataset of 213 proteins (53 effectors, 160 non-effectors).
+| Method | TP | TN | FP | FN | Accuracy | Precision | Recall | F1 | MCC |
+|--------|----|----|----|----|----------|-----------|--------|----|-----|
+| **StructEff** | **43** | 143 | 17 | **10** | 87.3% | 0.717 | **0.811** | **0.761** | 0.678 |
+| PPEPFinder | 36 | **152** | **8** | 17 | 88.3% | **0.818** | 0.679 | 0.742 | 0.672 |
+| EffectorP 3.0 | 36 | 148 | 12 | 17 | 86.4% | 0.750 | 0.679 | 0.713 | 0.620 |
+| EffectorP-fungi 3.0 | 33 | **159** | **1** | 20 | **90.1%** | **0.971** | 0.623 | 0.759 | **0.726** |
+| DeepRedEff | 32 | 91 | 69 | 21 | 57.7% | 0.317 | 0.604 | 0.416 | 0.149 |
+
+**Key highlights:**
+- StructEff detects the **most true effectors (TP=43)** — 7 more than PPEPFinder and EffectorP 3.0
+- StructEff achieves the **highest recall (0.811)** and **best F1-score (0.761)**
+- StructEff achieves **ROC-AUC = 0.8979** — best overall discrimination
+- EffectorP-fungi 3.0 is most conservative (FP=1) but misses 20 effectors
+- DeepRedEff performs poorly with 69 false positives on this dataset
 
 ---
 
