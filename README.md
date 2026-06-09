@@ -146,7 +146,7 @@ https://pytorch.org/get-started/locally/).
 **DSSP** — required for STEP 2 residue features:
 
 ```bash
-conda install -c salilab dssp -y     # provides the `mkdssp` binary
+conda install -c conda-forge dssp -y     # provides the `mkdssp` binary
 ```
 
 **MMseqs2** — required for STEP 5 conservation entropy. Install the static
@@ -166,8 +166,8 @@ conda activate StructEff
 mmseqs version
 ```
 
-> If `mmseqs version` reports "Illegal instruction", your CPU lacks AVX2 —
-> download the `mmseqs-linux-sse41` build instead.
+#> If `mmseqs version` reports "Illegal instruction", your CPU lacks AVX2 —
+#> download the `mmseqs-linux-sse41` build instead.
 
 ### 6. Download the UniRef50 database (~150+ GB free, several hours)
 
