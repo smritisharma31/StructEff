@@ -162,6 +162,7 @@ ls tools/mmseqs/bin/mmseqs            # confirm the binary exists
 # put it on PATH (use the ABSOLUTE path to your clone)
 echo "export PATH=$(pwd)/tools/mmseqs/bin:\$PATH" >> ~/.bashrc
 source ~/.bashrc
+conda activate StructEff
 mmseqs version
 ```
 
