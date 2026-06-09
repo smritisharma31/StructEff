@@ -1,24 +1,52 @@
 # StructEff — Fungal Effector Prediction Tool
 
-StructEff predicts fungal effector proteins from amino-acid sequence by
-combining predicted 3D structure (local ESMFold), residue/structural/biological
-features, MMseqs2 conservation entropy, and ESM2-650M embeddings, transformed
-through a contrastive (Siamese) network and classified with XGBoost.
+StructEff predicts fungal effector proteins from protein sequences using a hybrid deep learning pipeline. Input sequences are first folded into 3D PDB structures using ESMFold, from which **35 structural and physicochemical features are manually computed** from the PDB structures (phi/psi torsion angles, RSA, contact maps, graph topology, betweenness centrality, pLDDT, cysteine content, secondary structure fractions, etc.). Sequences are additionally used for **MMseqs2-based conservation features** (entropy, pct_conserved) and **ESM2-650M sequence embeddings** (1280-dim). All features are combined and trained via a **dynamic hard negative contrastive Siamese network** followed by XGBoost classification.
 
-## Pipeline
+---
+
+## Performance
+
+Benchmarked on an independent dataset of **213 proteins (53 effectors, 160 non-effectors)**.
+
+| Method | TP | TN | FP | FN | Accuracy | Precision | Recall | F1 | MCC |
+|--------|----|----|----|----|----------|-----------|--------|----|-----|
+| **StructEff** | **43** | 143 | 17 | **10** | 87.3% | 0.717 | **0.811** | **0.761** | 0.678 |
+| PPEPFinder | 36 | **152** | **8** | 17 | 88.3% | **0.818** | 0.679 | 0.742 | 0.672 |
+| EffectorP 3.0 | 36 | 148 | 12 | 17 | 86.4% | 0.750 | 0.679 | 0.713 | 0.620 |
+| EffectorP-fungi 3.0 | 33 | **159** | **1** | 20 | **90.1%** | **0.971** | 0.623 | 0.759 | **0.726** |
+| DeepRedEff | 32 | 91 | 69 | 21 | 57.7% | 0.317 | 0.604 | 0.416 | 0.149 |
+
+**Key highlights:**
+- StructEff detects the **most true effectors (TP=43)** — 7 more than PPEPFinder and EffectorP 3.0
+- StructEff achieves the **highest recall (0.811)** and **best F1-score (0.761)**
+- StructEff achieves **ROC-AUC = 0.8979** — best overall discrimination
+- EffectorP-fungi 3.0 is most conservative (FP=1) but misses 20 effectors
+- DeepRedEff performs poorly with 69 false positives on this dataset
+
+---
+
+## How It Works
 
 ```
-FASTA
- ├─ STEP 1  ESMFold (local)        → 3D structures (PDB)
- ├─ STEP 2  residue features       (DSSP)
- ├─ STEP 3  aggregate to protein
- ├─ STEP 4  structural features
- ├─ STEP 5  conservation entropy   (MMseqs2 vs UniRef50)
- ├─ STEP 6  biological features
- ├─ STEP 7  merge
- ├─ STEP 8  ESM2-650M embeddings
- └─ contrastive transform → XGBoost → prediction
+Input: FASTA file (protein sequences)
+        ↓
+Step 1: ESMFold API → 3D PDB structures
+        ↓
+Step 2: Structural feature extraction
+        (phi/psi angles, RSA, contact maps,
+         graph features, pLDDT, DSSP, etc.)
+        ↓
+Step 3: MMseqs2 → sequence conservation features
+        (entropy, pct_conserved, pct_variable)
+        ↓
+Step 4: ESM2-650M → sequence embeddings (1280-dim)
+        ↓
+Step 5: Siamese contrastive transform → XGBoost
+        ↓
+Output: CSV with protein_id, probability, prediction
 ```
+
+---
 
 ## Repository layout
 
@@ -56,8 +84,7 @@ large and/or machine-specific and must never be committed.
 | Disk      | **~180+ GB free**: UniRef50 MMseqs DB (~150 GB) + ESMFold weights (~8.4 GB) + ESM2-650M (~2.5 GB) + structures/outputs |
 | Network   | First run downloads model weights; UniRef50 download is large and multi-hour |
 
-CPU-only operation is possible but ESMFold folding will be very slow; a GPU is
-strongly recommended.
+CPU-only operation is possible but ESMFold folding will be very slow; a GPU is strongly recommended.
 
 ---
 
@@ -79,9 +106,23 @@ conda create -n StructEff python=3.10 -y
 conda activate StructEff
 ```
 
-> A Python 3.8 env will not work — the cu128 torch wheels are cp310.
+#> A Python 3.8 env will not work — the cu128 torch wheels are cp310.
 
-### 3. PyTorch — install FIRST (before the other deps)
+### 3. Python dependencies
+
+```bash
+pip install -r requirements.txt
+```
+First, check that torch is installed:
+
+```bash
+python check_setup.py
+```
+
+Note: Torch might require cuda/GPU specific installation, if check_setup.py returns a successful torch import; skip step4.
+
+
+### 4. PyTorch — cuda/GPU specific installation
 
 On NVIDIA Blackwell GPUs (RTX 50-series, e.g. 5070 Ti = compute capability
 sm_120) you must use a CUDA 12.8 build. Standard cu121/cu124 wheels lack sm_120
@@ -99,12 +140,6 @@ x=torch.randn(2000,2000,device='cuda'); print('ok', tuple((x@x).shape))"
 
 For non-Blackwell GPUs, use the CUDA build matching your driver (see
 https://pytorch.org/get-started/locally/).
-
-### 4. Python dependencies
-
-```bash
-pip install -r requirements.txt
-```
 
 ### 5. External tools (not pip)
 
