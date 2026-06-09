@@ -10,6 +10,12 @@ import pandas as pd
 from scipy.stats import skew
 
 
+ENTROPY_COLUMNS = [
+    "mean_entropy", "variance_entropy", "std_entropy",
+    "skew_entropy", "pct_conserved", "pct_variable",
+]
+
+
 def run_mmseqs2(fasta_file, db_path, output_dir, threads=8):
     os.makedirs(output_dir, exist_ok=True)
     query_db  = os.path.join(output_dir, "queryDB")
@@ -48,19 +54,53 @@ def compute_entropy_features(group):
     }
 
 
-def extract_entropy_features(aln_file):
+def _zero_feats(protein_id):
+    feats = {c: 0.0 for c in ENTROPY_COLUMNS}
+    feats["protein_id"] = protein_id
+    return feats
+
+
+def extract_entropy_features(aln_file, protein_ids=None):
+    """
+    Parse the MMseqs2 alignment and compute per-protein conservation features.
+
+    Robust to the common no-homolog case: if the alignment file is missing or
+    empty (0 hits passed the e-value threshold), every query gets zero-filled
+    entropy features instead of crashing — identical to the --no-mmseqs path.
+    Proteins present in `protein_ids` but absent from the alignment are also
+    zero-filled, so the output always covers every query.
+    """
     print("\n🔹 Computing entropy features...")
+
+    # Empty or missing alignment -> all-zero features for every query.
+    if (not os.path.exists(aln_file)) or os.path.getsize(aln_file) == 0:
+        print("  No alignment hits — filling entropy features with zeros")
+        ids = list(protein_ids) if protein_ids is not None else []
+        df_out = pd.DataFrame([_zero_feats(pid) for pid in ids])
+        print(f"  Proteins with entropy features: {len(df_out)}")
+        return df_out
+
     df = pd.read_csv(aln_file, sep="\t", header=None).iloc[:, :12]
     df.columns = [
         "query","target","pident","alnlen",
         "mismatch","gapopen","qstart","qend",
         "tstart","tend","evalue","bits"
     ]
+
     results = []
+    hit_ids = set()
     for protein, group in df.groupby("query"):
         feats = compute_entropy_features(group)
         feats["protein_id"] = protein
         results.append(feats)
+        hit_ids.add(protein)
+
+    # Zero-fill any query that had no hits so the feature table is complete.
+    if protein_ids is not None:
+        for pid in protein_ids:
+            if pid not in hit_ids:
+                results.append(_zero_feats(pid))
+
     df_out = pd.DataFrame(results)
     print(f"  Proteins with entropy features: {len(df_out)}")
     return df_out
@@ -68,15 +108,4 @@ def extract_entropy_features(aln_file):
 
 def get_default_entropy_features(protein_ids):
     print("\n⚠️  MMseqs2 not used — filling entropy features with zeros")
-    rows = []
-    for pid in protein_ids:
-        rows.append({
-            "protein_id"      : pid,
-            "mean_entropy"    : 0.0,
-            "variance_entropy": 0.0,
-            "std_entropy"     : 0.0,
-            "skew_entropy"    : 0.0,
-            "pct_conserved"   : 0.0,
-            "pct_variable"    : 0.0,
-        })
-    return pd.DataFrame(rows)
+    return pd.DataFrame([_zero_feats(pid) for pid in protein_ids])

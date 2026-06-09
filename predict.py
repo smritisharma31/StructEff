@@ -30,11 +30,11 @@ from structeff.features.entropy  import (
 )
 from structeff.features.bio      import extract_bio_features
 from structeff.merge             import merge_all_features, TRAINING_COLUMNS
-
+from structeff.siamese import Siamese
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "XGB_MODEL_v5_hardneg.pkl")
 ESM_LAYER  = 33
-THRESHOLD  = 0.64
+THRESHOLD  = 0.2
 
 
 def parse_args():
@@ -52,7 +52,7 @@ Examples:
     parser.add_argument("--outdir",    default="results",           help="Output directory")
     parser.add_argument("--mmseqs-db", default=None,                help="Path to MMseqs2 UniRef50 database")
     parser.add_argument("--threads",   default=8,      type=int,    help="Threads for MMseqs2")
-    parser.add_argument("--threshold", default=THRESHOLD, type=float, help="Prediction threshold (default: 0.64)")
+    parser.add_argument("--threshold", default=THRESHOLD, type=float, help="Prediction threshold (default: 0.2)")
     parser.add_argument("--no-mmseqs", action="store_true",         help="Skip MMseqs2 entropy features")
     return parser.parse_args()
 
@@ -133,6 +133,7 @@ def main():
     scaler     = bundle["scaler"]
     classifier = bundle["classifier"]
     threshold  = args.threshold
+    print(f"   Active threshold: {threshold} (bundle stored: {bundle['threshold']})")
     model_cl.eval()
 
     # Get protein IDs
@@ -142,7 +143,7 @@ def main():
 
     # Step 1: ESMFold
     print(f"\n{'='*55}")
-    print("STEP 1: Generating 3D structures with ESMFold API")
+    print("STEP 1: Generating 3D structures with ESMFold (local)")
     print(f"{'='*55}")
     fold_fasta(args.fasta, pdb_dir)
 
@@ -151,6 +152,11 @@ def main():
     print("STEP 2: Extracting residue-level features")
     print(f"{'='*55}")
     df_residue = extract_residue_features(pdb_dir)
+    if df_residue is None or df_residue.empty or "rsa" not in df_residue.columns:
+        print("\n[FATAL] No parseable residue features were produced.")
+        print("        All structures failed to fold or DSSP could not read them.")
+        print("        Check results/pdb_structures/ — PDBs must start with a CRYST1 record.")
+        sys.exit(1)
 
     # Step 3: Aggregate
     print(f"\n{'='*55}")
@@ -172,7 +178,7 @@ def main():
         df_entropy = get_default_entropy_features(protein_ids)
     else:
         aln_file   = run_mmseqs2(args.fasta, args.mmseqs_db, mmseq_dir, args.threads)
-        df_entropy = extract_entropy_features(aln_file)
+        df_entropy = extract_entropy_features(aln_file, protein_ids)
 
     # Step 6: Bio features
     print(f"\n{'='*55}")
