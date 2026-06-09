@@ -106,7 +106,7 @@ conda create -n StructEff python=3.10 -y
 conda activate StructEff
 ```
 
-#> A Python 3.8 env will not work — the cu128 torch wheels are cp310.
+> A Python 3.8 env will not work — the cu128 torch wheels are cp310.
 
 ### 3. Python dependencies
 
@@ -166,8 +166,8 @@ conda activate StructEff
 mmseqs version
 ```
 
-#> If `mmseqs version` reports "Illegal instruction", your CPU lacks AVX2 —
-#> download the `mmseqs-linux-sse41` build instead.
+> If `mmseqs version` reports "Illegal instruction", your CPU lacks AVX2 —
+> download the `mmseqs-linux-sse41` build instead.
 
 ### 6. Download the UniRef50 database (~150+ GB free, several hours)
 
