@@ -102,7 +102,7 @@ All subsequent commands assume you are inside this directory.
 ### 2. Environment (Python 3.10 required)
 
 ```bash
-conda create -n StructEff python=3.10 -y
+conda create -n StructEff python=3.10 pip -y
 conda activate StructEff
 ```
 
@@ -111,7 +111,7 @@ conda activate StructEff
 ### 3. Python dependencies
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 First, check that torch is installed:
 
