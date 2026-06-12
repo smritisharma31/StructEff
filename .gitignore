@@ -23,6 +23,7 @@ __pycache__/
 .venv/
 venv/
 *.bak
+*.faa
 
 # OS / editor
 .DS_Store

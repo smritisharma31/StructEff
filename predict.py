@@ -19,6 +19,7 @@ import esm
 from Bio import SeqIO
 from tqdm import tqdm
 
+from structeff.fasta_utils       import prepare_fasta
 from structeff.esmfold           import fold_fasta
 from structeff.features.residue  import extract_residue_features
 from structeff.features.graph    import aggregate_to_protein
@@ -71,6 +72,9 @@ def generate_esm_embeddings(fasta_file, device):
     print(f"\n🔹 Generating ESM2 embeddings for {len(records)} sequences...")
     for record in tqdm(records):
         pid = record.id.strip()
+        # Input FASTA was already sanitized by prepare_fasta at ingestion, so
+        # sequences are tokenizer-safe here. The 1022 cap is ESM2's hard
+        # architectural limit (1024 positions minus BOS/EOS) and must stay.
         seq = str(record.seq)[:1022]
         batch = [("protein", seq)]
         _, _, tokens = batch_converter(batch)
@@ -136,8 +140,29 @@ def main():
     print(f"   Active threshold: {threshold} (bundle stored: {bundle['threshold']})")
     model_cl.eval()
 
-    # Get protein IDs
-    records     = list(SeqIO.parse(args.fasta, "fasta"))
+    # Step 0: parse + sanitize input FASTA once. Every downstream step reads
+    # this cleaned file, so character cleaning happens in exactly one place.
+    print(f"\n{'='*55}")
+    print("STEP 0: Parsing and sanitizing input FASTA")
+    print(f"{'='*55}")
+    clean_fasta = os.path.join(args.outdir, "cleaned_input.fasta")
+    report = prepare_fasta(args.fasta, clean_fasta)
+    print(f"  Read     : {report['n_in']} sequences")
+    print(f"  Kept     : {report['n_out']}")
+    print(f"  Modified : {len(report['modified'])} (non-standard chars cleaned)")
+    print(f"  Dropped  : {len(report['dropped'])}")
+    if report["dropped"]:
+        drop_path = os.path.join(args.outdir, "dropped_sequences.txt")
+        with open(drop_path, "w") as fh:
+            for pid, reason in report["dropped"]:
+                fh.write(f"{pid}\t{reason}\n")
+        print(f"  Dropped IDs written to: {drop_path}")
+    if report["n_out"] == 0:
+        print("\n[FATAL] No usable sequences after cleaning. Check the input FASTA.")
+        sys.exit(1)
+
+    # Get protein IDs (from the cleaned FASTA, so they match every later step)
+    records     = list(SeqIO.parse(clean_fasta, "fasta"))
     protein_ids = [r.id.strip() for r in records]
     print(f"\n📋 Proteins to predict: {len(protein_ids)}")
 
@@ -145,7 +170,7 @@ def main():
     print(f"\n{'='*55}")
     print("STEP 1: Generating 3D structures with ESMFold (local)")
     print(f"{'='*55}")
-    fold_fasta(args.fasta, pdb_dir)
+    fold_fasta(clean_fasta, pdb_dir)
 
     # Step 2: Residue features
     print(f"\n{'='*55}")
@@ -177,7 +202,7 @@ def main():
     if args.no_mmseqs or args.mmseqs_db is None:
         df_entropy = get_default_entropy_features(protein_ids)
     else:
-        aln_file   = run_mmseqs2(args.fasta, args.mmseqs_db, mmseq_dir, args.threads)
+        aln_file   = run_mmseqs2(clean_fasta, args.mmseqs_db, mmseq_dir, args.threads)
         df_entropy = extract_entropy_features(aln_file, protein_ids)
 
     # Step 6: Bio features
@@ -201,7 +226,7 @@ def main():
     print(f"\n{'='*55}")
     print("STEP 8: Generating ESM2 embeddings")
     print(f"{'='*55}")
-    df_esm, esm_cols = generate_esm_embeddings(args.fasta, device)
+    df_esm, esm_cols = generate_esm_embeddings(clean_fasta, device)
 
     # Merge struct + ESM
     df_struct_df = pd.DataFrame(X_struct, columns=struct_cols)
@@ -215,6 +240,16 @@ def main():
 
     print(f"\n  Final feature dimension: {X.shape}")
 
+    # Safety check: feature count must match what the model was trained on.
+    # Catches feature-pipeline drift before it reaches the classifier and
+    # produces silently-wrong probabilities.
+    expected_input = bundle.get("input_dim", 1315)
+    if X.shape[1] != expected_input:
+        print(f"\n[FATAL] Feature dimension mismatch: built {X.shape[1]}, "
+              f"model expects {expected_input}.")
+        print("        A feature step changed shape — predictions would be invalid.")
+        sys.exit(1)
+
     # Contrastive transform
     print("\n🔹 Applying contrastive transform...")
     model_cl = model_cl.to(device)
@@ -226,6 +261,12 @@ def main():
 
     X_final = np.concatenate([X, X_emb], axis=1)
     print(f"  Transformed shape: {X_final.shape}")
+
+    expected_final = bundle.get("final_dim", 1571)
+    if X_final.shape[1] != expected_final:
+        print(f"\n[FATAL] Transformed dimension mismatch: got {X_final.shape[1]}, "
+              f"model expects {expected_final}.")
+        sys.exit(1)
 
     # Predict
     print(f"\n🔹 Predicting with threshold={threshold}...")
