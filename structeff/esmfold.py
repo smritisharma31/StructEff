@@ -24,13 +24,25 @@ import torch
 from tqdm import tqdm
 from Bio import SeqIO
 
+from structeff.fasta_utils import clean_sequence
+
 # ----------------------------------------------------------------------
-# Tunables. Adjust MAX_LEN / LONG_SEQ_THRESHOLD to your GPU's VRAM.
-# ESMFold peak memory scales ~quadratically with sequence length.
+# Folding length / memory policy (tuned for ~16 GB VRAM, RTX 5070 Ti).
+# ESMFold peak GPU memory scales ~quadratically with sequence length.
+#
+#   <= CHUNK_THRESHOLD : fold with no chunking (fastest)
+#   CHUNK_THRESHOLD..FOLD_CAP : fold, stepping chunk size down on OOM
+#   > FOLD_CAP         : TRUNCATE to FOLD_CAP, then fold (cap-fold) — the
+#                        protein still gets a (partial, N-terminal) structure
+#                        and a prediction rather than being dropped.
+#
+# If folding still OOMs at the smallest chunk size, that single protein is
+# skipped and logged (NOT sent to CPU — CPU folding of large proteins can
+# exhaust system RAM and get the whole run killed by the OOM killer).
 # ----------------------------------------------------------------------
-MAX_LEN = 400                 # hard cap; matches the old API truncation
-LONG_SEQ_THRESHOLD = 350      # above this, shrink chunk size to save VRAM
-CHUNK_SIZE_LONG = 64          # trunk chunk size for long sequences (None = off)
+FOLD_CAP = 800                 # truncate sequences longer than this before folding
+CHUNK_THRESHOLD = 350          # above this length, use chunked attention
+CHUNK_STEPS = [128, 64, 32]    # chunk sizes tried in order on repeated OOM
 MODEL_NAME = "facebook/esmfold_v1"
 
 # Module-level cache so the 2.5 GB model loads only once per process.
@@ -65,31 +77,33 @@ def _load_model():
     return _MODEL, _TOKENIZER, _DEVICE
 
 
-def _fold_once(model, tokenizer, device, seq):
-    """Run one sequence through ESMFold and return PDB text."""
-    # Long sequences: trade speed for lower peak memory.
-    if len(seq) > LONG_SEQ_THRESHOLD and CHUNK_SIZE_LONG is not None:
-        try:
-            model.trunk.set_chunk_size(CHUNK_SIZE_LONG)
-        except Exception:
-            pass
-    else:
-        try:
-            model.trunk.set_chunk_size(None)
-        except Exception:
-            pass
+def _fold_once(model, tokenizer, device, seq, chunk_size):
+    """Run one sequence through ESMFold at a given trunk chunk size.
 
-    inputs = tokenizer(
-        [seq], return_tensors="pt", add_special_tokens=False
-    )["input_ids"].to(device)
+    chunk_size=None disables chunking (fastest, highest memory). A smaller
+    integer lowers peak memory at the cost of speed.
+    """
+    try:
+        model.trunk.set_chunk_size(chunk_size)
+    except Exception:
+        pass
 
     with torch.no_grad():
-        output = model.infer_pdb(seq) if hasattr(model, "infer_pdb") else None
-        if output is not None:
-            return output
+        if hasattr(model, "infer_pdb"):
+            return model.infer_pdb(seq)
         # Fallback for versions without the infer_pdb convenience method:
+        inputs = tokenizer(
+            [seq], return_tensors="pt", add_special_tokens=False
+        )["input_ids"].to(device)
         result = model(inputs)
         return model.output_to_pdb(result)[0]
+
+
+def _chunk_schedule(seq_len):
+    """Chunk sizes to try, in order, for a given (already-capped) length."""
+    if seq_len <= CHUNK_THRESHOLD:
+        return [None] + CHUNK_STEPS      # try fast path first, then shrink
+    return list(CHUNK_STEPS)             # long: go straight to chunked
 
 
 # Standard dummy unit cell. DSSP (and many PDB parsers) require a CRYST1
@@ -123,27 +137,50 @@ def fold_sequence(sequence, protein_id, output_dir):
     """
     Fold one sequence locally and write {protein_id}.pdb.
     Returns the pdb path on success, or None on failure (never raises).
-    Tries GPU first; on CUDA OOM, retries the same sequence on CPU.
+    Sequences longer than FOLD_CAP are truncated; on CUDA OOM the chunk
+    size is stepped down, and the protein is skipped if it still won't fit.
     """
     model, tokenizer, device = _load_model()
-    seq = str(sequence)[:MAX_LEN]
+
+    seq = clean_sequence(sequence)
+    if len(seq) < 5:
+        print(f"[SKIP] {protein_id}: no valid residues after cleaning "
+              f"(len={len(seq)}); original had non-standard characters")
+        return None
+
+    orig_len = len(seq)
+    if orig_len > FOLD_CAP:
+        seq = seq[:FOLD_CAP]
+        print(f"[TRUNCATE] {protein_id}: {orig_len} aa -> {FOLD_CAP} aa "
+              f"(too long for full-length folding; predicting on N-terminal {FOLD_CAP})")
+        with open(os.path.join(output_dir, "truncated_folds.txt"), "a") as tf:
+            tf.write(f"{protein_id}\t{orig_len}\t{FOLD_CAP}\n")
+
     pdb_path = os.path.join(output_dir, f"{protein_id}.pdb")
 
-    try:
-        pdb_text = _fold_once(model, tokenizer, device, seq)
-    except torch.cuda.OutOfMemoryError:
-        print(f"[OOM] {protein_id} ({len(seq)} aa) — retrying on CPU...")
+    # Try folding, stepping the chunk size down on each CUDA OOM. Only give up
+    # (skip + log) if even the smallest chunk size runs out of memory. No CPU
+    # fallback: CPU folding of large proteins can exhaust system RAM and get
+    # the whole run killed by the OS OOM killer.
+    pdb_text = None
+    for chunk in _chunk_schedule(len(seq)):
+        try:
+            pdb_text = _fold_once(model, tokenizer, device, seq, chunk)
+            break
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            gc.collect()
+            pdb_text = None
+            continue
+        except Exception as e:
+            print(f"[FAILED] {protein_id}: {e}")
+            return None
+
+    if pdb_text is None:
+        print(f"[SKIP] {protein_id}: out of GPU memory at all chunk sizes "
+              f"(len={len(seq)}) — too large to fold on this card")
         torch.cuda.empty_cache()
         gc.collect()
-        try:
-            cpu_model = model.to("cpu")
-            pdb_text = _fold_once(cpu_model, tokenizer, torch.device("cpu"), seq)
-            model.to(device)  # move back for subsequent sequences
-        except Exception as e:
-            print(f"[FAILED] {protein_id} on CPU fallback: {e}")
-            return None
-    except Exception as e:
-        print(f"[FAILED] {protein_id}: {e}")
         return None
 
     pdb_text = _sanitize_pdb(pdb_text)
@@ -190,5 +227,11 @@ def fold_fasta(fasta_file, output_dir, delay=0.0):
 
     print(f"\n✅ Folded: {len(results)} | Failed: {len(failed)}")
     if failed:
-        print(f"Failed: {failed}")
+        failed_path = os.path.join(output_dir, "failed_folds.txt")
+        with open(failed_path, "w") as fh:
+            fh.write("\n".join(failed) + "\n")
+        preview = ", ".join(failed[:10])
+        more = f" (+{len(failed) - 10} more)" if len(failed) > 10 else ""
+        print(f"   Failed IDs: {preview}{more}")
+        print(f"   Full list written to: {failed_path}")
     return results
